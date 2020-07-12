@@ -1,11 +1,15 @@
 # -*- coding: utf-8 -*-
 from __future__ import unicode_literals
 
+import shutil
+
 import pytest
 
 from cleo.testers import CommandTester
 
 from poetry.factory import Factory
+from poetry.repositories.legacy_repository import LegacyRepository
+from poetry.repositories.legacy_repository import Page
 from poetry.repositories.pool import Pool
 from tests.helpers import get_package
 
@@ -13,6 +17,11 @@ from ..conftest import Application
 from ..conftest import Locker
 from ..conftest import Path
 
+
+try:
+    import urllib.parse as urlparse
+except ImportError:
+    import urlparse
 
 PYPROJECT_CONTENT = """\
 [tool.poetry]
@@ -69,6 +78,27 @@ def poetry(repo, tmp_dir):
 @pytest.fixture
 def app(poetry):
     return Application(poetry)
+
+
+class MockRepository(LegacyRepository):
+    FIXTURES = Path(__file__).parent / "fixtures" / "export"
+
+    def _get(self, endpoint):
+        parts = endpoint.split("/")
+        name = parts[1]
+
+        fixture = self.FIXTURES / (name + ".html")
+        if not fixture.exists():
+            return
+
+        with fixture.open(encoding="utf-8") as f:
+            return Page(self._url + endpoint, f.read(), {})
+
+    def _download(self, url, dest):
+        filename = urlparse.urlparse(url).path.rsplit("/")[-1]
+        filepath = self.FIXTURES.parent / "dists" / filename
+
+        shutil.copyfile(str(filepath), dest)
 
 
 def test_export_exports_requirements_txt_file_locks_if_no_lock_file(app, repo):
@@ -185,6 +215,174 @@ def test_export_includes_extras_by_flag(app, repo):
 
     expected = """\
 bar==1.1.0
+foo==1.0.0
+"""
+
+    assert expected == tester.io.fetch_output()
+
+
+def test_export_includes_private_repository(app, repo):
+    source = MockRepository(
+        "mirror",
+        "https://repo.example.com/api/pypi/public-mirror-pypi/simple",
+        disable_cache=True,
+    )
+    app.poetry.pool.add_repository(source)
+
+    repo.add_package(get_package("foo", "1.0.0"))
+    repo.add_package(get_package("bar", "1.1.0"))
+
+    command = app.find("lock")
+    tester = CommandTester(command)
+    tester.execute()
+
+    assert app.poetry.locker.lock.exists()
+
+    command = app.find("export")
+    tester = CommandTester(command)
+
+    tester.execute("--format requirements.txt --without-hashes")
+
+    expected = """\
+foo==1.0.0
+"""
+
+    assert expected == tester.io.fetch_output()
+
+
+def test_export_includes_secondary_private_repository(app, repo):
+    source = MockRepository(
+        "mirror",
+        "https://repo.example.com/api/pypi/public-mirror-pypi/simple",
+        disable_cache=True,
+    )
+    app.poetry.pool.add_repository(source, secondary=True)
+
+    repo.add_package(get_package("foo", "1.0.0"))
+    repo.add_package(get_package("bar", "1.1.0"))
+
+    command = app.find("lock")
+    tester = CommandTester(command)
+    tester.execute()
+
+    assert app.poetry.locker.lock.exists()
+
+    command = app.find("export")
+    tester = CommandTester(command)
+
+    tester.execute("--format requirements.txt --without-hashes")
+
+    expected = """\
+--extra-index-url https://repo.example.com/api/pypi/local-pypi/simple
+
+foo==1.0.0
+"""
+
+    assert expected == tester.io.fetch_output()
+
+
+def test_export_includes_default_private_repository(app, repo):
+    source = MockRepository(
+        "mirror",
+        "https://repo.example.com/api/pypi/public-mirror-pypi/simple",
+        disable_cache=True,
+    )
+    app.poetry.pool.add_repository(source, default=True)
+
+    repo.add_package(get_package("foo", "1.0.0"))
+    repo.add_package(get_package("bar", "1.1.0"))
+
+    command = app.find("lock")
+    tester = CommandTester(command)
+    tester.execute()
+
+    assert app.poetry.locker.lock.exists()
+
+    command = app.find("export")
+    tester = CommandTester(command)
+
+    tester.execute("--format requirements.txt --without-hashes")
+
+    expected = """\
+--index-url https://repo.example.com/api/pypi/public-mirror-pypi/simple
+
+foo==1.0.0
+"""
+
+    assert expected == tester.io.fetch_output()
+
+
+def test_export_includes_default_private_repository_and_other(app, repo):
+    source = MockRepository(
+        "mirror",
+        "https://repo.example.com/api/pypi/public-mirror-pypi/simple",
+        disable_cache=True,
+    )
+    app.poetry.pool.add_repository(source, default=True)
+
+    other = MockRepository(
+        "local",
+        "https://repo.example.com/api/pypi/local-pypi/simple",
+        disable_cache=True,
+    )
+    app.poetry.pool.add_repository(other)
+
+    repo.add_package(get_package("foo", "1.0.0"))
+    repo.add_package(get_package("bar", "1.1.0"))
+
+    command = app.find("lock")
+    tester = CommandTester(command)
+    tester.execute()
+
+    assert app.poetry.locker.lock.exists()
+
+    command = app.find("export")
+    tester = CommandTester(command)
+
+    tester.execute("--format requirements.txt --without-hashes")
+
+    expected = """\
+--index-url https://repo.example.com/api/pypi/public-mirror-pypi/simple
+
+foo==1.0.0
+"""
+
+    assert expected == tester.io.fetch_output()
+
+
+def test_export_includes_default_private_repository_and_secondary(app, repo):
+    source = MockRepository(
+        "mirror",
+        "https://repo.example.com/api/pypi/public-mirror-pypi/simple",
+        disable_cache=True,
+    )
+    app.poetry.pool.add_repository(source, default=True)
+
+    other = MockRepository(
+        "local",
+        "https://repo.example.com/api/pypi/local-pypi/simple",
+        disable_cache=True,
+    )
+    app.poetry.pool.add_repository(other, secondary=True)
+
+    repo.add_package(get_package("foo", "1.0.0"))
+    repo.add_package(get_package("bar", "1.1.0"))
+
+    command = app.find("lock")
+    tester = CommandTester(command)
+    tester.execute()
+
+    assert app.poetry.locker.lock.exists()
+
+    command = app.find("export")
+    tester = CommandTester(command)
+
+    tester.execute("--format requirements.txt --without-hashes")
+
+    expected = """\
+--index-url https://repo.example.com/api/pypi/public-mirror-pypi/simple
+--extra-index-url https://repo.example.com/api/pypi/local-pypi/simple
+
 foo==1.0.0
 """
 

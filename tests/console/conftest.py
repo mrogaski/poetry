@@ -135,6 +135,10 @@ class Poetry(BasePoetry):
 
 
 class Repository(BaseRepository):
+    @property
+    def url(self):
+        return "https://pypi.org/"
+
     def find_packages(
         self, name, constraint=None, extras=None, allow_prereleases=False
     ):
